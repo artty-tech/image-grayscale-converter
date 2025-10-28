@@ -12,17 +12,19 @@ def process_image(input_data, grayscale_level, is_preview=False):
     """
     try:
         # 1. เปิดภาพต้นฉบับและแปลงเป็นโหมดสี (RGB)
-        # ถ้าเป็น Preview เราจะรับ Input เป็น BytesIO (จาก st.file_uploader)
         if is_preview:
             input_data.seek(0) # กลับไปที่ต้นไฟล์ก่อนเปิด
             original_image = Image.open(input_data).convert("RGB")
-            # สำหรับ Preview เราไม่ต้องตั้งชื่อไฟล์
             output_filename = None
         else:
-            # สำหรับ Final Output เราจะรับ Input เป็น Streamlit UploadedFile
-            original_image = Image.open(input_data).convert("RGB")
-            file_name, file_ext = input_data.name.rsplit('.', 1)
-            output_filename = f"{file_name}_G{grayscale_level}.PNG" # เปลี่ยนเป็น PNG เพื่อคุณภาพที่ดี
+            # ตรวจสอบประเภท Input สำหรับ Final Output
+            if isinstance(input_data, io.BytesIO): # สำหรับภาพเดียวที่ผ่านการประมวลผลใน Preview แล้ว
+                 original_image = Image.open(input_data).convert("RGB")
+                 output_filename = input_data.name # ใช้ชื่อที่ส่งมา
+            else: # สำหรับ Streamlit UploadedFile
+                 original_image = Image.open(input_data).convert("RGB")
+                 file_name, file_ext = input_data.name.rsplit('.', 1)
+                 output_filename = f"{file_name}_G{grayscale_level}.PNG"
 
         # 2. แปลงภาพต้นฉบับให้เป็น Grayscale 100%
         grayscale_image = original_image.convert("L").convert("RGB")
@@ -35,10 +37,8 @@ def process_image(input_data, grayscale_level, is_preview=False):
         
         # 5. จัดการ Output
         if is_preview:
-            # สำหรับ Preview ให้คืนค่าเป็นวัตถุ Image
             return processed_image
         else:
-            # สำหรับ Final Output ให้คืนค่าเป็นชื่อไฟล์และข้อมูลไบต์
             img_byte_arr = io.BytesIO()
             processed_image.save(img_byte_arr, format='PNG') 
             img_byte_arr.seek(0)
@@ -56,7 +56,6 @@ def clear_files():
     if 'file_uploader_key' not in st.session_state:
         st.session_state['file_uploader_key'] = 0
     
-    # เพิ่มค่า Key เพื่อให้ Streamlit สร้าง File Uploader ตัวใหม่
     st.session_state['file_uploader_key'] += 1
     st.info("🖼️ รูปภาพทั้งหมดถูกล้างแล้ว กรุณาอัปโหลดไฟล์ใหม่")
 
@@ -89,16 +88,16 @@ uploaded_files = st.file_uploader(
 )
 st.button("🗑️ ล้างรูปภาพและเริ่มใหม่", on_click=clear_files)
 
-# --- ส่วนแสดงผล Preview ---
+# --- ส่วนแสดงผล Preview และการส่งออก (Final Output) ---
 if uploaded_files:
     # 3. สร้าง Preview (แสดงเฉพาะภาพแรกที่อัปโหลด)
     st.subheader("👀 ตัวอย่างการแสดงผล (จากภาพแรก)")
     st.markdown("ปรับระดับความเข้ม จากแถบด้านบนได้")
     
-    # อ่านข้อมูลของภาพแรกในรูปแบบ BytesIO สำหรับ Preview
     first_file = uploaded_files[0]
-    # **สำคัญ:** ต้องสร้างสำเนา BytesIO เพื่อไม่ให้รบกวนข้อมูลไฟล์ต้นฉบับ
-    file_bytes = io.BytesIO(first_file.getvalue()) 
+    
+    # สร้างสำเนา BytesIO สำหรับ Preview (ไม่ต้องสร้างซ้ำถ้ามี)
+    file_bytes = io.BytesIO(first_file.getvalue())
     
     # ประมวลผลภาพตัวอย่าง
     preview_image = process_image(file_bytes, grayscale_level, is_preview=True)
@@ -107,33 +106,59 @@ if uploaded_files:
     if preview_image:
         st.image(preview_image, caption=f"Preview: Grayscale {grayscale_level}%", use_container_width=True)
 
-# --- ส่วนประมวลผล Final Output ---
-if uploaded_files:
-    if st.button("🚀 เริ่มการประมวลผลและสร้าง ZIP"):
+    # 4. ส่วนประมวลผล Final Output (รวมเงื่อนไข)
+    if st.button("🚀 เริ่มการประมวลผลและส่งออกไฟล์"):
         
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            st.text("กำลังประมวลผลภาพทั้งหมด...")
-            progress_bar = st.progress(0)
+        # -----------------------------------------------------------------
+        # เงื่อนไขการส่งออก: ภาพเดียว vs. หลายภาพ
+        # -----------------------------------------------------------------
+        if len(uploaded_files) == 1:
+            # A. กรณีมี 1 ภาพ: ส่งออกเป็นไฟล์เดี่ยว (PNG)
+            st.text("กำลังประมวลผลภาพเดี่ยว...")
             
-            for i, file in enumerate(uploaded_files):
-                # ส่งไฟล์ Streamlit UploadedFile ไปประมวลผล
-                filename, file_data = process_image(file, grayscale_level, is_preview=False)
+            # ใช้ไฟล์เดียว
+            single_file = uploaded_files[0]
+            
+            # ประมวลผลเป็น Final Output
+            filename, file_data = process_image(single_file, grayscale_level, is_preview=False)
+            
+            if file_data:
+                st.success(f"✅ ประมวลผลเสร็จสิ้น! ไฟล์ {filename} พร้อมดาวน์โหลด")
                 
-                if file_data:
-                    zf.writestr(filename, file_data)
+                # ปุ่มดาวน์โหลดไฟล์เดี่ยว
+                st.download_button(
+                    label=f"⬇️ ดาวน์โหลดไฟล์ {filename}",
+                    data=file_data,
+                    file_name=filename,
+                    mime="image/png"
+                )
+
+        else:
+            # B. กรณีมีหลายภาพ (>1 ภาพ): ส่งออกเป็นไฟล์ ZIP
+            zip_buffer = io.BytesIO()
+            
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                st.text(f"กำลังประมวลผลภาพทั้งหมด {len(uploaded_files)} ภาพ...")
+                progress_bar = st.progress(0)
                 
-                progress_bar.progress((i + 1) / len(uploaded_files))
-        
-        st.success(f"✅ ประมวลผลเสร็จสิ้น! สร้างไฟล์ ZIP ที่มี {len(uploaded_files)} ภาพ")
-        
-        # 4. ปุ่มดาวน์โหลด
-        st.download_button(
-            label="⬇️ ดาวน์โหลดไฟล์ ZIP",
-            data=zip_buffer.getvalue(),
-            file_name=f"Grayscale_Level_{grayscale_level}_Images.zip",
-            mime="application/zip"
-        )
+                for i, file in enumerate(uploaded_files):
+                    # ประมวลผลเป็น Final Output
+                    filename, file_data = process_image(file, grayscale_level, is_preview=False)
+                    
+                    if file_data:
+                        zf.writestr(filename, file_data)
+                    
+                    progress_bar.progress((i + 1) / len(uploaded_files))
+            
+            zip_filename = f"Grayscale_Level_{grayscale_level}_Images.zip"
+            st.success(f"✅ ประมวลผลเสร็จสิ้น! สร้างไฟล์ ZIP ที่มี {len(uploaded_files)} ภาพ")
+            
+            # ปุ่มดาวน์โหลดไฟล์ ZIP
+            st.download_button(
+                label="⬇️ ดาวน์โหลดไฟล์ ZIP",
+                data=zip_buffer.getvalue(),
+                file_name=zip_filename,
+                mime="application/zip"
+            )
 else:
     st.warning("กรุณาอัปโหลดไฟล์ภาพเพื่อเริ่มการทำงาน")
